@@ -303,6 +303,16 @@ taws --endpoint-url http://localhost:4566
 AWS_ENDPOINT_URL=http://localhost:4566 taws
 ```
 
+The endpoint can also be pinned to a profile in `~/.aws/config`, the same way the
+AWS CLI does it. `--endpoint-url` takes precedence, then `AWS_ENDPOINT_URL`, then
+the profile setting:
+
+```ini
+[profile localstack]
+region = us-east-1
+endpoint_url = http://localhost:4566
+```
+
 ### Log File Locations
 
 | Platform | Path |

@@ -881,6 +881,23 @@ pub fn get_profile_region(profile: &str) -> Option<String> {
     None
 }
 
+/// Get the custom endpoint URL configured for a profile in ~/.aws/config.
+///
+/// Mirrors the AWS CLI's `endpoint_url` profile setting. Service-specific endpoints
+/// (the `services` section) are not supported: taws talks to a single endpoint for
+/// every service.
+pub fn get_profile_endpoint_url(profile: &str) -> Option<String> {
+    let config_path = get_aws_config_file_path().ok()?;
+    let content = fs::read_to_string(config_path).ok()?;
+    let endpoint = parse_ini_file(&content)
+        .get(profile)?
+        .get("endpoint_url")?
+        .trim()
+        .to_string();
+
+    (!endpoint.is_empty()).then_some(endpoint)
+}
+
 /// List available AWS profiles
 #[allow(dead_code)]
 pub fn list_profiles() -> Vec<String> {
@@ -2404,5 +2421,56 @@ region = us-west-2
                 }
             }
         }
+    }
+
+    /// Run `f` with AWS_CONFIG_FILE pointing at a config file holding `content`.
+    fn with_aws_config_file<T>(content: &str, f: impl FnOnce() -> T) -> T {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let original = env::var("AWS_CONFIG_FILE").ok();
+        env::set_var("AWS_CONFIG_FILE", file.path());
+        let result = f();
+        if let Some(value) = original {
+            env::set_var("AWS_CONFIG_FILE", value);
+        } else {
+            env::remove_var("AWS_CONFIG_FILE");
+        }
+        result
+    }
+
+    #[test]
+    fn test_profile_endpoint_url_is_read_from_config() {
+        let config = r#"
+[default]
+region = eu-west-1
+
+[profile local]
+region = eu-west-1
+endpoint_url = http://localhost:4566
+"#;
+        with_aws_config_file(config, || {
+            assert_eq!(
+                get_profile_endpoint_url("local"),
+                Some("http://localhost:4566".to_string())
+            );
+            assert_eq!(get_profile_endpoint_url("default"), None);
+            assert_eq!(get_profile_endpoint_url("missing"), None);
+        });
+    }
+
+    #[test]
+    fn test_profile_endpoint_url_ignores_empty_value() {
+        with_aws_config_file(
+            "[profile local]
+endpoint_url =
+",
+            || {
+                assert_eq!(get_profile_endpoint_url("local"), None);
+            },
+        );
     }
 }

@@ -52,7 +52,8 @@ struct Args {
     #[arg(long)]
     readonly: bool,
 
-    /// Custom AWS endpoint URL (for LocalStack, etc.). Also reads from AWS_ENDPOINT_URL env var.
+    /// Custom AWS endpoint URL (for LocalStack, etc.). Falls back to the
+    /// AWS_ENDPOINT_URL env var, then to `endpoint_url` in ~/.aws/config.
     #[arg(long)]
     endpoint_url: Option<String>,
 
@@ -351,11 +352,13 @@ where
         .clone()
         .unwrap_or_else(|| config.effective_region());
 
-    // Get endpoint URL from CLI arg or environment variable
+    // Endpoint URL precedence follows the AWS CLI: --endpoint-url, then the
+    // AWS_ENDPOINT_URL environment variable, then `endpoint_url` on the profile.
     let endpoint_url = args
         .endpoint_url
         .clone()
-        .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok());
+        .or_else(|| std::env::var("AWS_ENDPOINT_URL").ok())
+        .or_else(|| aws::credentials::get_profile_endpoint_url(&profile));
 
     tracing::info!(
         "Using profile: {}, region: {}, endpoint_url: {:?}",
