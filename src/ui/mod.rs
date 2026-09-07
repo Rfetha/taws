@@ -156,6 +156,34 @@ fn render_filter_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+/// Space `Table` reserves between two columns; must stay in sync with the widget default.
+const TABLE_COLUMN_SPACING: u16 = 1;
+
+/// Fit a cell value into the width its column actually gets on screen.
+///
+/// The tail is dropped rather than the head: resource names share long suffixes far more
+/// often than long prefixes (`web-01.eu-central-1.example.com`), so the beginning is the
+/// part that tells rows apart.
+fn truncate_cell(value: &str, column_width: usize) -> String {
+    // A single glyph rather than "...", so marking the cut costs one column, not three.
+    const ELLIPSIS: char = '\u{2026}';
+
+    // Cells are rendered with one leading space of padding.
+    let budget = column_width.saturating_sub(1);
+    if value.chars().count() <= budget {
+        return value.to_string();
+    }
+    if budget <= 1 {
+        // No room for both a character and the marker.
+        return value.chars().take(budget).collect();
+    }
+    value
+        .chars()
+        .take(budget - 1)
+        .chain(std::iter::once(ELLIPSIS))
+        .collect()
+}
+
 /// Render dynamic table based on current resource definition
 fn render_dynamic_table(f: &mut Frame, app: &App, area: Rect) {
     let Some(resource) = app.current_resource() else {
@@ -221,13 +249,19 @@ fn render_dynamic_table(f: &mut Frame, app: &App, area: Rect) {
     let inner_area = block.inner(area);
     f.render_widget(block, area);
 
-    // Calculate actual column widths in characters based on inner area and percentages
-    // Note: inner_area.width is already the usable width inside the border
-    let total_width = inner_area.width.saturating_sub(2) as usize; // subtract for table borders
-    let column_widths: Vec<usize> = resource
+    // Resolve the column widths exactly the way `Table` will lay them out, so truncation
+    // matches what is actually rendered. Percentages in the resource JSON do not
+    // necessarily add up to 100, and `Table` inserts one space between columns.
+    let widths: Vec<Constraint> = resource
         .columns
         .iter()
-        .map(|col| (total_width * col.width as usize) / 100)
+        .map(|col| Constraint::Percentage(col.width))
+        .collect();
+    let column_widths: Vec<usize> = Layout::horizontal(widths.clone())
+        .spacing(TABLE_COLUMN_SPACING)
+        .split(inner_area)
+        .iter()
+        .map(|rect| rect.width as usize)
         .collect();
 
     // Build header from column definitions with left padding
@@ -256,20 +290,8 @@ fn render_dynamic_table(f: &mut Frame, app: &App, area: Rect) {
                     style = style.fg(Color::White);
                 }
                 let display_value = format_cell_value(&value, col);
-                // Truncate from beginning to show the end (more meaningful for paths/names)
-                // The column width from percentage doesn't account for inter-column spacing,
-                // so we use 80% of calculated width to be safe
                 let col_width = column_widths_clone.get(col_idx).copied().unwrap_or(40);
-                let usable_width = (col_width * 80) / 100;
-                let display_value = if display_value.chars().count() > usable_width {
-                    let chars: Vec<char> = display_value.chars().collect();
-                    let keep_chars = usable_width.saturating_sub(3); // 3 for "..."
-                    let start = chars.len().saturating_sub(keep_chars);
-                    let truncated: String = chars[start..].iter().collect();
-                    format!("...{}", truncated)
-                } else {
-                    display_value
-                };
+                let display_value = truncate_cell(&display_value, col_width);
 
                 if highlight_filter_matches
                     && (col.json_path == resource.name_field || col.json_path == resource.id_field)
@@ -290,13 +312,6 @@ fn render_dynamic_table(f: &mut Frame, app: &App, area: Rect) {
             });
             Row::new(cells)
         });
-
-    // Build column widths
-    let widths: Vec<Constraint> = resource
-        .columns
-        .iter()
-        .map(|col| Constraint::Percentage(col.width))
-        .collect();
 
     let table = Table::new(rows, widths).header(header).row_highlight_style(
         Style::default()
@@ -826,7 +841,7 @@ fn render_crumb(f: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::describe_title;
+    use super::{describe_title, truncate_cell};
 
     #[test]
     fn describe_title_uses_action_display_name_when_present() {
@@ -838,5 +853,31 @@ mod tests {
     fn describe_title_falls_back_to_resource_details() {
         let title = describe_title("EC2 Instances", None);
         assert_eq!(title, " EC2 Instances Details ");
+    }
+
+    #[test]
+    fn truncate_cell_keeps_short_values_untouched() {
+        // 12 chars into a 13 wide column: 12 for the text, 1 for the leading pad.
+        assert_eq!(truncate_cell("i-0123456789", 13), "i-0123456789");
+    }
+
+    #[test]
+    fn truncate_cell_drops_the_tail_not_the_head() {
+        assert_eq!(
+            truncate_cell("web-01.eu-central-1.example.com", 10),
+            "web-01.e…"
+        );
+    }
+
+    #[test]
+    fn truncate_cell_falls_back_to_a_bare_cut_when_too_narrow() {
+        assert_eq!(truncate_cell("running", 2), "r");
+        assert_eq!(truncate_cell("running", 1), "");
+        assert_eq!(truncate_cell("running", 0), "");
+    }
+
+    #[test]
+    fn truncate_cell_counts_characters_not_bytes() {
+        assert_eq!(truncate_cell("ölçüm-değeri", 7), "ölçüm…");
     }
 }
